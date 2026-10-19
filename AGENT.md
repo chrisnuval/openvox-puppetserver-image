@@ -45,7 +45,9 @@ helm list -A | grep -i -E 'openvox|puppet'
   Path H or M for the server. Path H's post-renderer is tied to the public chart 11.0.0 and is
   **not** applied to a fork.
 
-**Read [KNOWLEDGE.md](KNOWLEDGE.md) once before starting.** It lists every problem found in the
+**Read [KNOWLEDGE.md](KNOWLEDGE.md) and [HANDOVER.md](HANDOVER.md) once before starting.**
+HANDOVER.md is the checklist (inventory, census, baseline, handover, post-checks, with real
+output) for any ownership change on existing volumes; use it in H4 and C5 whatever the chart. It lists every problem found in the
 reference run (IDs K1–K16), how to recognise it in code you have not seen, and the fix.
 
 ---
@@ -161,6 +163,7 @@ see [Appendix D](#appendix-d-ubi-10-option).)
 | `openvoxdb/Containerfile`, `openvoxdb/build/`, `openvoxdb/rootfs/` | OpenVoxDB 8.17.0 image on UBI 9 (same design as the server) | only build-arg defaults, with operator approval |
 | `scripts/openvoxdb-test.sh` | OpenVoxDB tests: with PostgreSQL + server, read-only root, allowlist, password file, SIGTERM, migration from PuppetDB 8.8.1 and rollback | no |
 | `k8s/openvoxdb.yaml` | hardened OpenVoxDB Deployment + PVC + Service + NetworkPolicy (reference for chart templates) | **yes**: adapt like Phase 6 |
+| `HANDOVER.md` | ownership handover checklist with sample commands and real output | no |
 | `KNOWLEDGE.md` | findings catalogue K1–K16: what to search for, why it breaks, the fix (incl. PuppetDB/OpenVoxDB, PostgreSQL) | no |
 
 ---

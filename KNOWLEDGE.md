@@ -54,19 +54,24 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 - The old image leaves files owned by **999:999**. The CA rewrites files (serial, inventory) by
   creating a temp file and copying the old owner onto it; UID 64604 cannot set owner 999, so
   **signing fails with HTTP 500 `Operation not permitted`** while health checks pass.
-- `fsGroup` changes only the group, and only on mount; files created `0600` stay unreadable.
+- `fsGroup` is not enough: at mount Kubernetes re-groups the volume to the fsGroup and adds group
+  read/write (observed: a `600` key became `660`), and every container in the pod gets that group.
+  So **reading** works, but the CA's owner-preserving rewrites (and `chmod` by scripts) need the
+  **owner**. Also, a sidecar left on 999 keeps working only thanks to fsGroup: check every container
+  (HANDOVER.md step 6).
 - Fix: one-time `chown -R 64604:64604` of every PVC, from a short-lived **root** pod running the
   **old** image (already approved in the cluster, has `chown`/`tar`), with the workload scaled to 0.
   `scripts/k8s-handover-volumes.sh` does this for a Deployment. Rollback: `chown -R 999:999`.
 - PuppetDB **[tested]**: `/ssl.sh` sets `u=rw,g=,o=` on everything under
   `SSLDIR=/opt/puppetlabs/server/data/puppetdb/certs` (on the data PVC), so the private key is
-  unreadable to any other UID. Reproduced: OpenVoxDB as 64604 on the 999-owned volume of
+  unreadable to any other UID (unless fsGroup re-groups it, see above). Reproduced without fsGroup: OpenVoxDB as 64604 on the 999-owned volume of
   `voxpupuli/puppetdb:8.8.1` fails to start; after `chown -R 64604:64604` it starts and keeps
   the certificate. The handover is mandatory for the PuppetDB PVC too. (The upstream openvoxdb
   MIGRATION.md suggests `chgrp -R 0` + `chmod -R g+rwX` instead; this repo uses and tested chown.)
 - PostgreSQL **[inspected, general Postgres rule]**: the data directory must be owned by the running
   UID with mode 0700, or Postgres refuses to start. Changing its UID needs the same handover.
 - Storage that refuses `chown` (NFS root squash): STOP; owner change on the storage side.
+- Procedure with every check and real sample output: [HANDOVER.md](HANDOVER.md).
 
 ### K3. Read-only root filesystem (CKV_K8S_22) [tested]
 - Every path the process or its entrypoint writes must be a volume. For the server image built here:
