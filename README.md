@@ -7,6 +7,10 @@ replacement for `ghcr.io/openvoxproject/openvoxserver`.
 runbook (written so an AI agent or a person can execute it) with build, tests, scans, staging
 rehearsal, cutover and rollback.
 
+[`KNOWLEDGE.md`](KNOWLEDGE.md) is the catalogue of every finding (K1–K16) with how to recognise
+it in an unfamiliar chart or image repo, including PuppetDB/OpenVoxDB and PostgreSQL; AGENT.md
+Path C uses it to analyse your own chart and image repos.
+
 - **No fixable vulnerabilities.** Java 21, Ruby 3.3, curl and OpenSSL come from Red Hat's RPMs,
   not from the openvox-agent all-in-one package (which vendors its own copies). No compilers, no
   package manager, no Python in the final image.

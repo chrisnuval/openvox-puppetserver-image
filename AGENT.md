@@ -38,6 +38,15 @@ helm list -A | grep -i -E 'openvox|puppet'
   image it finds) → Phases 2, 3, 4, 5 → **H2, H3, H4** (H5 only if triggered) → Phase 10.
   Phases 1, 6, 7, 8 and 9 are **not** used on Path H.
 - **Plain manifests** (no Helm release): follow Phases 0–10 in order (Path M).
+- **Your own chart / image repos** (a fork or in-house chart, e.g. based on the OpenVox chart but
+  different, possibly with PuppetDB/OpenVoxDB and PostgreSQL): start with
+  [Path C](#path-c-own-chart-and-image-repos-analysis-first). It analyses your repos against
+  [KNOWLEDGE.md](KNOWLEDGE.md) and produces a findings report and change plan, then continues with
+  Path H or M for the server. Path H's post-renderer is tied to the public chart 11.0.0 and is
+  **not** applied to a fork.
+
+**Read [KNOWLEDGE.md](KNOWLEDGE.md) once before starting.** It lists every problem found in the
+reference run (IDs K1–K16), how to recognise it in code you have not seen, and the fix.
 
 ---
 
@@ -149,6 +158,7 @@ see [Appendix D](#appendix-d-ubi-10-option).)
 | `helm/post-render/` | post-renderer (kustomize patches + Helm 4 plugin): read-only root, PVC protection, r10k fixes | no |
 | `scripts/helm-migration-test.sh` | Helm rehearsal: old setup → hardened upgrade → rollback, with checks | no |
 | `scripts/k8s-handover-volumes.sh` | one-time `chown` of a Deployment's PVCs via a root pod running the old image | no |
+| `KNOWLEDGE.md` | findings catalogue K1–K16: what to search for, why it breaks, the fix (incl. PuppetDB/OpenVoxDB, PostgreSQL) | no |
 
 ---
 
@@ -676,6 +686,95 @@ are damaged (maintenance pod, Phase 9).
 
 ---
 
+## Path C: own chart and image repos (analysis first)
+
+For repositories the reference run never saw: a company chart derived from the OpenVox (or older
+Vox Pupuli) chart, and image repos for the server and PuppetDB/OpenVoxDB. The agent knows where
+these repos are from its own configuration. **Nothing from them leaves the company environment**:
+do not paste their content into external tools, issues or web searches; use the offline checker
+(`OFFLINE=1`, `scripts/k8s-policy-check.rb`) if container registries for scanners are not approved.
+
+Rules on top of section 0: Path C is **read-only** until STOP gate C4. Work on a branch in each repo.
+
+### C1. Inventory (read-only)
+For each repo, record in the report:
+- **Chart:** chart name/version, `Chart.yaml` dependencies (PostgreSQL subchart?), workloads
+  (`grep -rn '^kind:' templates/`), the values files used per environment (ask the operator which
+  one production uses), image references and tags for every container incl. init/sidecars.
+- **Server image repo:** base image, how OpenVox is installed (AIO `openvox-agent`/`puppet-agent`
+  package = K11 source of CVEs), `USER`, entrypoint, version.
+- **DB image repo / image:** which image actually runs (`ghcr.io/voxpupuli/puppetdb:8.8.1-*` is the
+  Perforce-based PuppetDB 8.8.1; there is no `openvoxdb:8.8.1`, see K14), env names (`PUPPETDB_*`
+  vs `OPENVOXDB_*`, K16), `USER` in `/etc/default/puppetdb`.
+- **Live state** (read-only, like H1/Phase 1): for each workload the running image digest, file
+  owners on each PVC (`stat -c '%u:%g %n'` on the CA key, SSL dir, PuppetDB `certs/`), PVC names
+  and UIDs, CA fingerprint, PuppetDB certname and database name (`kubectl exec ... -- env | grep -E 'PUPPETDB|OPENVOXDB|CERTNAME'`, never print passwords).
+
+### C2. Search for known findings
+Run the search list in [KNOWLEDGE.md section 1](KNOWLEDGE.md#1-quick-search-list) on the chart repo.
+For each hit, record file:line and the K-ID. Then render the chart **twice** with production values:
+```bash
+helm dependency build <chart dir>       # only if Chart.yaml has dependencies (e.g. postgresql); uses the configured chart repos
+helm template "$REL" <chart dir> -n "$NS" -f <prod values> > render-old.yaml        # as deployed today
+podman run --rm -v "$PWD:/w:ro,Z" --entrypoint ruby "$IMAGE" /w/scripts/k8s-policy-check.rb /w/render-old.yaml > policy-old.txt
+grep -c FAIL policy-old.txt
+```
+(`$IMAGE` is the server image from Phase 2; any image with Ruby works. Or the Checkov container.)
+Compare `render-old.yaml` with `helm get manifest "$REL" -n "$NS"`: if they differ, the repo is not
+what runs; **STOP** and ask which commit/values are deployed.
+
+### C3. Findings report
+Write a table per workload (server, r10k/other sidecars, DB, PostgreSQL, helper init containers):
+
+| Workload / container | Failed checks | K-IDs | Location (file:line) | Proposed fix | Data risk |
+|---|---|---|---|---|---|
+
+"Data risk" is **yes** for anything touching PVCs, ownership, PVC annotations/hooks (K2, K5),
+database name/user, certnames (K16): those need the handover/backup steps and a rehearsal.
+Also list: CVE sources per image (K11), and anything you could not classify (do not guess a fix).
+
+### C4. Change plan (STOP gate C4)
+Propose the changes in this order (each a separate commit/PR), show the plan, wait for "go":
+1. **Server image:** build this repo's image (Phases 2–5) or port its approach into the company
+   server image repo (tarball install on UBI, UID 64604, seed dirs, `USER=""`).
+2. **Chart, server workload:** apply K1, K3, K4, K5, K6, K7, K8, K9, K10, K12 in the templates
+   (values switches with secure defaults). Use `helm/post-render/` and `k8s/openvox-server.yaml` as
+   the reference for exact securityContext, volumes and probes. PVC templates: no hooks,
+   `helm.sh/resource-policy: keep`.
+3. **DB image:** OpenVoxDB 8.17.0 built the same way as the server (K11, K16): UBI 9 minimal, Java 21,
+   tarball from `artifacts.voxpupuli.org/openvoxdb/8.17.0/`, UID 64604, `USER=""` in
+   `/etc/default/puppetdb`, seed copy of `/etc/puppetlabs/puppetdb`, writable allowlist location
+   (K3), entrypoint scripts from the upstream openvoxdb container repo, unmodified. This was **not**
+   built in the reference run: give it its own smoke test (start against PostgreSQL + the server,
+   cert request, `/status/v1/services/puppetdb-status` = running, a report/fact submission from the
+   server, read-only root), its own scan (0 fixable), and a migration test from the exact running
+   PuppetDB image on a copy of its data PVC **and** a `pg_dump` of its database.
+4. **Chart, DB workload:** K1–K4, K12 for the DB Deployment and its init containers; env renamed
+   per K16 with the **old values set explicitly** (database name, user, `CERTNAME`).
+5. **PostgreSQL:** K15 (or confirm it is external/out of scope with the operator).
+
+### C5. Implement, test, rehearse
+- Per change: `helm lint`, render, policy check (target: only CKV_K8S_43 until digests are set,
+  then none), `diff` of renders before/after, shown to the operator.
+- Before the rehearsal, render old and new and compare **PVC annotations** (K5):
+  ```bash
+  for f in render-old.yaml render-new.yaml; do echo "== $f"; ruby -ryaml -e 'YAML.load_stream(File.read(ARGV[0])).compact.select{|d| d["kind"]=="PersistentVolumeClaim"}.each{|d| puts "#{d["metadata"]["name"]} #{(d["metadata"]["annotations"]||{}).inspect}"}' "$f"; done
+  ```
+  Expected: same PVC names in both, no `helm.sh/hook`, `keep` in the new render. (On the public
+  chart, `--set global.runAsNonRoot=true` shows `"helm.sh/hook"=>"pre-install"` on the CA PVC:
+  exactly the K5 deletion case.)
+- Rehearse in a throwaway namespace with `scripts/helm-migration-test.sh`, after adapting its pod
+  and PVC selectors to the chart's labels (KNOWLEDGE.md section 3), and extend it with the DB
+  checks from step 3. Expected: the same PASS lines as in H3, plus the DB checks.
+- Production follows H4/H5 (backup, `keep` annotation, handover of **every** PVC incl. the DB's,
+  `pg_dump`, upgrade, verify PVC UIDs, CA fingerprint, signing, DB status, agent runs).
+  Without the post-renderer, `$POST` is not used; the hardening is in the templates.
+
+**Exit criteria:** findings report and change plan approved (C4); every change rendered, policy
+checked and rehearsed with all PASS lines; DB and PostgreSQL items either done or recorded as open.
+
+---
+
 ## 15. Phase 10: After the migration
 
 - Rebuild weekly (or on Red Hat security errata) with `podman build --no-cache`, run
@@ -718,6 +817,9 @@ see it again, the fix tells you what changed.
 | Server stays at 0 replicas after `helm upgrade` | chart has no `replicas` for a single master; handover scaled it to 0 | post-renderer pins `replicas: 1`; manual fix `kubectl scale deploy ... --replicas=1` |
 | r10k sidecar: `can't create /home/puppet/...`, `/etc/passwd`, `/etc/puppetlabs/r10k/r10k.yaml: Read-only file system` | r10k image writes to its root filesystem at startup | post-renderer r10k patch (emptyDirs + passwd init container) |
 | CA signing fails after the Helm upgrade, HTTP 500 `Operation not permitted` | old image left CA files owned by 999:999 | `scripts/k8s-handover-volumes.sh` (H4 step 2) |
+| DB pod: `Permission denied` on `certs/private_keys/server.key` | PuppetDB SSL files are `0600` owned by 999 (KNOWLEDGE K2) | hand the DB PVC over too |
+| DB connects to an empty database / requests a new certificate | renamed env vars fell back to OpenVoxDB defaults (`openvoxdb`) (K16) | set `OPENVOXDB_POSTGRES_DATABASE`, `..._USER`, `CERTNAME` to the old values |
+| Policy check reports CKV_K8S_28/37 but Checkov does not | old offline checker compared `drop: [all]` case-sensitively | fixed: the checker now ignores case, like Checkov |
 
 ---
 
