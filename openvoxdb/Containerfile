@@ -1,0 +1,107 @@
+# OpenVoxDB on Red Hat UBI (9 by default; UBI_MAJOR=10 also works). Companion to ../Containerfile.
+#
+# Java and OpenSSL come from Red Hat's RPMs; no openvox-agent all-in-one package. Runs as
+# UID 64604 / GID 0 and supports a read-only root filesystem (writable paths:
+# rootfs/usr/local/share/openvox/writable-dirs, plus /tmp).
+#
+# Build from the repository root (shares build/checksums.sha256 and the seed script):
+#   podman build --format docker -f openvoxdb/Containerfile -t openvoxdb-ubi:8.17.0 .
+# After changing a version below, run scripts/update-checksums.sh.
+
+ARG UBI_REGISTRY=registry.access.redhat.com
+ARG UBI_MAJOR=9
+ARG UBI_TAG=9.8
+
+################################################################################
+FROM ${UBI_REGISTRY}/ubi${UBI_MAJOR}/ubi:${UBI_TAG} AS build
+
+# renovate: datasource=custom.voxpupuli-artifacts depName=openvoxdb
+ARG OPENVOXDB_VERSION=8.17.0
+# Commit of OpenVoxProject/container-openvoxdb whose scripts are used (unmodified, AGPL-3.0)
+ARG OPENVOXDB_UPSTREAM_REF=ef6370dfc2c90495ad2a2ae2e0a5453bd6de23fa
+
+COPY build/sources.sh build/checksums.sha256 /build/
+COPY openvoxdb/build/install-openvoxdb.sh /build/
+RUN /build/install-openvoxdb.sh
+
+################################################################################
+FROM ${UBI_REGISTRY}/ubi${UBI_MAJOR}/ubi-minimal:${UBI_TAG} AS final
+
+ARG UBI_REGISTRY
+ARG UBI_MAJOR
+ARG UBI_TAG
+ARG OPENVOXDB_VERSION=8.17.0
+ARG OPENVOX_USER_UID=64604
+ARG OPENVOX_USER_GID=64604
+
+LABEL org.opencontainers.image.title="OpenVoxDB (UBI ${UBI_MAJOR})" \
+      org.opencontainers.image.version="${OPENVOXDB_VERSION}" \
+      org.opencontainers.image.licenses="Apache-2.0 AND AGPL-3.0-only" \
+      org.opencontainers.image.base.name="${UBI_REGISTRY}/ubi${UBI_MAJOR}/ubi-minimal:${UBI_TAG}"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Same reasoning as the server image: packages never used at runtime, removed after install.
+ARG REMOVE_UNUSED_RPMS=true
+ARG UNUSED_RPMS="python3 python3-libs python3-pip-wheel python3-setuptools-wheel crypto-policies-scripts cups-libs avahi-libs microdnf libdnf librepo libsolv libmodulemd json-glib librhsm gpgme gnupg2 libpeas libusbx libassuan libksba npth"
+
+# curl (healthcheck, wait for the server) is already in ubi-minimal as curl-minimal.
+# No PostgreSQL client: the only tool the upstream scripts use from it is pg_isready (see rootfs).
+# hadolint ignore=SC2046
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+      java-21-openjdk-headless bash openssl procps-ng hostname findutils which \
+    && microdnf upgrade -y --nodocs \
+    && microdnf clean all \
+    && rm -rf /var/cache/yum /var/lib/dnf/history* \
+    && if [ "$REMOVE_UNUSED_RPMS" = true ]; then \
+         rpm -e --nodeps $(rpm -q --qf '%{NAME}\n' $UNUSED_RPMS | grep -v 'not installed'); \
+       fi
+
+# Settings read by the upstream entrypoint scripts and config (same names and defaults as the
+# upstream openvoxdb image). Migrating from PuppetDB 8.8.1: the old image used PUPPETDB_* names
+# and other defaults; set database, user and CERTNAME explicitly (KNOWLEDGE.md K16).
+# Unlike upstream there is no default password: OPENVOXDB_POSTGRES_PASSWORD must be set (from a
+# Secret), otherwise startup stops with an unresolved-substitution error.
+ENV LOGDIR=/opt/puppetlabs/server/data/puppetdb/logs \
+    SSLDIR=/opt/puppetlabs/server/data/puppetdb/certs \
+    CERTNAME="openvoxdb" \
+    DNS_ALT_NAMES="" \
+    OPENVOXDB_CERTIFICATE_ALLOWLIST="" \
+    OPENVOXDB_JAVA_ARGS="-Djava.net.preferIPv4Stack=true -Xms256m -Xmx256m -XX:+UseParallelGC -Xlog:gc*:file=/opt/puppetlabs/server/data/puppetdb/logs/puppetdb_gc.log -Djdk.tls.ephemeralDHKeySize=2048" \
+    OPENVOXDB_NODE_PURGE_TTL="14d" \
+    OPENVOXDB_NODE_TTL="7d" \
+    OPENVOXDB_POSTGRES_DATABASE="openvoxdb" \
+    OPENVOXDB_POSTGRES_HOSTNAME="postgres" \
+    OPENVOXDB_POSTGRES_PORT="5432" \
+    OPENVOXDB_POSTGRES_USER="openvoxdb" \
+    OPENVOXDB_REPORT_TTL="14d" \
+    OPENVOXDB_WAITFORHEALTH_SECONDS="360" \
+    OPENVOXDB_WAITFORHOST_SECONDS="30" \
+    OPENVOXDB_WAITFORPOSTGRES_SECONDS="60" \
+    USE_OPENVOXSERVER=true \
+    WAITFORCERT="120" \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/opt/puppetlabs/server/bin:/opt/puppetlabs/bin \
+    HOME=/opt/puppetlabs/server/data/puppetdb \
+    OPENVOX_USER_UID=${OPENVOX_USER_UID} \
+    OPENVOX_USER_GID=${OPENVOX_USER_GID}
+
+COPY --from=build /etc/puppetlabs /etc/puppetlabs
+COPY --from=build /opt/puppetlabs /opt/puppetlabs
+COPY --from=build /var/log/puppetlabs /var/log/puppetlabs
+COPY --from=build /var/run/puppetlabs /run/puppetlabs
+COPY --from=build /upstream/ /
+COPY rootfs/container-entrypoint.d/00-seed-writable-dirs.sh /container-entrypoint.d/
+COPY openvoxdb/rootfs/ /
+COPY openvoxdb/build/finalize-image.sh /usr/local/libexec/openvox/finalize-image.sh
+RUN /usr/local/libexec/openvox/finalize-image.sh
+
+USER ${OPENVOX_USER_UID}:0
+
+# Kubernetes ignores HEALTHCHECK; use httpGet probes on 8080 /status/v1/services/puppetdb-status
+HEALTHCHECK --interval=20s --timeout=15s --retries=12 --start-period=3m CMD ["/healthcheck.sh"]
+
+EXPOSE 8080 8081
+
+# forward-signals stands in for upstream's dumb-init (not in UBI): clean shutdown on SIGTERM
+ENTRYPOINT ["/usr/local/bin/forward-signals", "/container-entrypoint.sh"]
+CMD ["foreground"]

@@ -43,6 +43,9 @@ CHECKS = {
   "CKV_K8S_30" => ["Apply security context to your containers",    ->(p, c) { c["securityContext"] }],
   "CKV_K8S_31" => ["Ensure that the seccomp profile is set to docker/default or runtime/default",
                    ->(p, c) { %w[RuntimeDefault Localhost].include?(sc(p, c, "seccompProfile")&.dig("type")) }],
+  "CKV_K8S_35" => ["Prefer using secrets as files over secrets as environment variables",
+                   ->(p, c) { Array(c["env"]).none? { |e| e.dig("valueFrom", "secretKeyRef") } &&
+                              Array(c["envFrom"]).none? { |e| e["secretRef"] } }],
   "CKV_K8S_37" => ["Minimize the admission of containers with capabilities assigned",
                    ->(p, c) { Array(c.dig("securityContext", "capabilities", "drop")).any? { |x| x.to_s.upcase == "ALL" } }],
   "CKV_K8S_38" => ["Ensure that Service Account Tokens are only mounted where necessary",

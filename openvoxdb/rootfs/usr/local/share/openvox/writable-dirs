@@ -1,0 +1,4 @@
+/etc/puppetlabs/puppetdb
+/opt/puppetlabs/server/data/puppetdb
+/var/log/puppetlabs
+/run/puppetlabs

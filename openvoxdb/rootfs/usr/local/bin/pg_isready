@@ -1,0 +1,20 @@
+#!/bin/bash
+# Minimal stand-in for PostgreSQL's pg_isready, used only by the upstream wait script
+# (/container-entrypoint.d/10-wait-for-hosts.sh: pg_isready -h HOST --port PORT -U USER).
+# Succeeds when HOST:PORT accepts TCP connections. Avoids installing the PostgreSQL client
+# package (and its findings) for one check; OpenVoxDB itself retries the real connection.
+host=localhost port=5432
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--host) host=$2; shift 2;;
+    -p|--port) port=$2; shift 2;;
+    --host=*) host=${1#*=}; shift;;
+    --port=*) port=${1#*=}; shift;;
+    *) shift;;
+  esac
+done
+if timeout 3 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+  echo "$host:$port - accepting connections"
+else
+  echo "$host:$port - no response"; exit 2
+fi

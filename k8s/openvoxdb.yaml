@@ -1,0 +1,160 @@
+# OpenVoxDB on Kubernetes, hardened for Checkov (CKV_K8S_9, _22 and _40 among others). Reference for
+# chart templates: copy the securityContext, volumes and probes.
+# Before applying: set the image (pinned by digest), namespace, the Secret (openvoxdb-postgres,
+# key password) and the PVC name.
+# MIGRATING from PuppetDB 8.8.1 (ghcr.io/voxpupuli/puppetdb): keep the existing data PVC (it holds
+# the PuppetDB certificate), hand it over to 64604 once (KNOWLEDGE.md K2), keep CERTNAME and the
+# database name/user of the old deployment (K16), and take a pg_dump first.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openvoxdb
+  namespace: openvox
+  labels:
+    app.kubernetes.io/name: openvoxdb
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 0, maxUnavailable: 1}   # ReadWriteOnce volume: never two pods
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openvoxdb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openvoxdb
+    spec:
+      hostname: openvoxdb
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 64604        # CKV_K8S_40: UID >= 10000
+        runAsGroup: 64604
+        fsGroup: 64604
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: openvoxdb
+          image: registry.example.com/openvoxdb-ubi:8.17.0   # replace; pin with @sha256:<digest>
+          imagePullPolicy: Always
+          env:
+            - name: CERTNAME             # migrating: the old deployment's value (PuppetDB 8.8.1 default: puppetdb)
+              value: openvoxdb
+            # No DNS_ALT_NAMES: the server connects to the certname (the Service is named like it), and the
+            # CA does not autosign requests with alternative names unless CA_ALLOW_SUBJECT_ALT_NAMES=true.
+            - name: OPENVOXSERVER_HOSTNAME   # Service of the server running the CA
+              value: openvox-server
+            - name: OPENVOXDB_POSTGRES_HOSTNAME
+              value: postgres
+            - name: OPENVOXDB_POSTGRES_DATABASE   # migrating: the old database name (PuppetDB default: puppetdb)
+              value: openvoxdb
+            - name: OPENVOXDB_POSTGRES_USER     # migrating: the old database user (PuppetDB default: puppetdb)
+              value: openvoxdb
+            # The password is read from the mounted Secret (CKV_K8S_35: secrets as files, not env).
+            # Alternative: OPENVOXDB_POSTGRES_PASSWORD from secretKeyRef. One of the two is required.
+            - name: OPENVOXDB_POSTGRES_PASSWORD_FILE
+              value: /run/secrets/openvoxdb/password
+          ports:
+            - name: https
+              containerPort: 8081
+            - name: http        # plain HTTP status/query API; used by the probes, not exposed by the Service
+              containerPort: 8080
+          securityContext:
+            readOnlyRootFilesystem: true          # CKV_K8S_22
+            allowPrivilegeEscalation: false
+            privileged: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet: {path: /status/v1/services/puppetdb-status, port: http}
+            periodSeconds: 10
+            failureThreshold: 60                  # waits for PostgreSQL, the server and its certificate
+          readinessProbe:                         # CKV_K8S_9
+            httpGet: {path: /status/v1/services/puppetdb-status, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /status/v1/services/puppetdb-status, port: http}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi     # heap is 256m (OPENVOXDB_JAVA_ARGS); raise both together
+          volumeMounts:
+            - {name: data, mountPath: /opt/puppetlabs/server/data/puppetdb}   # certificate, queue, logs
+            - {name: config, mountPath: /etc/puppetlabs/puppetdb}            # filled from the image at start
+            - {name: logs, mountPath: /var/log/puppetlabs}
+            - {name: run, mountPath: /run/puppetlabs}
+            - {name: tmp, mountPath: /tmp}
+            - {name: postgres-secret, mountPath: /run/secrets/openvoxdb, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openvoxdb-data      # migrating: the existing PuppetDB PVC
+        - {name: config, emptyDir: {sizeLimit: 16Mi}}
+        - {name: logs, emptyDir: {sizeLimit: 1Gi}}
+        - {name: run, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 1Gi}}
+        - name: postgres-secret
+          secret:
+            secretName: openvoxdb-postgres     # key "password"
+            defaultMode: 0440                  # group 64604 (fsGroup) may read it
+            items: [{key: password, path: password}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openvoxdb-data
+  namespace: openvox
+  annotations:
+    helm.sh/resource-policy: keep   # in a chart: never render this as a hook (KNOWLEDGE.md K5)
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openvoxdb
+  namespace: openvox
+  labels:
+    app.kubernetes.io/name: openvoxdb
+spec:
+  selector:
+    app.kubernetes.io/name: openvoxdb
+  ports:
+    - name: https
+      port: 8081
+      targetPort: https
+---
+# Only the server talks to OpenVoxDB (add dashboards such as Puppetboard if you run them).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openvoxdb
+  namespace: openvox
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openvoxdb
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openvox-server
+      ports:
+        - port: 8081
+          protocol: TCP

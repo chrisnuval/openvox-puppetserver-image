@@ -14,3 +14,9 @@ sources() {
     echo "$gh/puppetlabs-${m%%:*}/archive/refs/tags/v${m#*:}.tar.gz puppetlabs-${m%%:*}-${m#*:}.tar.gz"
   done
 }
+
+# OpenVoxDB image (openvoxdb/Containerfile): the tarball and the upstream image repo's scripts
+db_sources() {
+  echo "https://artifacts.voxpupuli.org/openvoxdb/${OPENVOXDB_VERSION}/openvoxdb-${OPENVOXDB_VERSION}.tar.gz openvoxdb-${OPENVOXDB_VERSION}.tar.gz"
+  echo "https://github.com/OpenVoxProject/container-openvoxdb/archive/${OPENVOXDB_UPSTREAM_REF}.tar.gz container-openvoxdb-${OPENVOXDB_UPSTREAM_REF}.tar.gz"
+}

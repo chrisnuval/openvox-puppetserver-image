@@ -7,12 +7,13 @@ cd "$(dirname "$0")/.."
 # Export the Containerfile's ARG defaults (ARG NAME=value / ARG NAME="value")
 while IFS='=' read -r name value; do
   export "$name=${value//\"/}"
-done < <(sed -nE 's/^ARG ([A-Z0-9_]+)=(.*)$/\1=\2/p' Containerfile)
+done < <(sed -nE 's/^ARG ([A-Z0-9_]+)=(.*)$/\1=\2/p' Containerfile openvoxdb/Containerfile)
 source build/sources.sh
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 list() {
   sources
+  db_sources
   for v in ${EXTRA_VERSIONS:-}; do OPENVOXSERVER_VERSION=$v OPENVOXDB_VERSION=$v sources | head -2; done
 }
 list | sort -u | while read -r url file; do

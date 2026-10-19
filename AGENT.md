@@ -158,6 +158,9 @@ see [Appendix D](#appendix-d-ubi-10-option).)
 | `helm/post-render/` | post-renderer (kustomize patches + Helm 4 plugin): read-only root, PVC protection, r10k fixes | no |
 | `scripts/helm-migration-test.sh` | Helm rehearsal: old setup → hardened upgrade → rollback, with checks | no |
 | `scripts/k8s-handover-volumes.sh` | one-time `chown` of a Deployment's PVCs via a root pod running the old image | no |
+| `openvoxdb/Containerfile`, `openvoxdb/build/`, `openvoxdb/rootfs/` | OpenVoxDB 8.17.0 image on UBI 9 (same design as the server) | only build-arg defaults, with operator approval |
+| `scripts/openvoxdb-test.sh` | OpenVoxDB tests: with PostgreSQL + server, read-only root, allowlist, password file, SIGTERM, migration from PuppetDB 8.8.1 and rollback | no |
+| `k8s/openvoxdb.yaml` | hardened OpenVoxDB Deployment + PVC + Service + NetworkPolicy (reference for chart templates) | **yes**: adapt like Phase 6 |
 | `KNOWLEDGE.md` | findings catalogue K1–K16: what to search for, why it breaks, the fix (incl. PuppetDB/OpenVoxDB, PostgreSQL) | no |
 
 ---
@@ -741,16 +744,25 @@ Propose the changes in this order (each a separate commit/PR), show the plan, wa
    (values switches with secure defaults). Use `helm/post-render/` and `k8s/openvox-server.yaml` as
    the reference for exact securityContext, volumes and probes. PVC templates: no hooks,
    `helm.sh/resource-policy: keep`.
-3. **DB image:** OpenVoxDB 8.17.0 built the same way as the server (K11, K16): UBI 9 minimal, Java 21,
-   tarball from `artifacts.voxpupuli.org/openvoxdb/8.17.0/`, UID 64604, `USER=""` in
-   `/etc/default/puppetdb`, seed copy of `/etc/puppetlabs/puppetdb`, writable allowlist location
-   (K3), entrypoint scripts from the upstream openvoxdb container repo, unmodified. This was **not**
-   built in the reference run: give it its own smoke test (start against PostgreSQL + the server,
-   cert request, `/status/v1/services/puppetdb-status` = running, a report/fact submission from the
-   server, read-only root), its own scan (0 fixable), and a migration test from the exact running
-   PuppetDB image on a copy of its data PVC **and** a `pg_dump` of its database.
-4. **Chart, DB workload:** K1–K4, K12 for the DB Deployment and its init containers; env renamed
-   per K16 with the **old values set explicitly** (database name, user, `CERTNAME`).
+3. **DB image:** build and test `openvoxdb/Containerfile` (or port it into the company DB image repo):
+   ```bash
+   DB_IMAGE=openvoxdb-ubi:8.17.0
+   podman build --format docker -f openvoxdb/Containerfile -t "$DB_IMAGE" . 2>&1 | tee build-db.log
+   OLD_DB_IMAGE=<running PuppetDB image from C1, by digest>   # e.g. ghcr.io/voxpupuli/puppetdb@sha256:...
+   scripts/openvoxdb-test.sh "$DB_IMAGE" "$IMAGE" "$OLD_DB_IMAGE" "$OLD_IMAGE" 2>&1 | tee openvoxdb-test.log
+   scripts/scan.sh "$DB_IMAGE" 2>&1 | tee scan-db.log     # offline: OFFLINE=1 POLICY_IMAGE="$IMAGE" scripts/scan.sh "$DB_IMAGE"
+   ```
+   The test needs a PostgreSQL image (`PG_IMAGE`, default `docker.io/library/postgres:16`; use an
+   internal mirror if docker.io is blocked). Expected: `ALL OPENVOXDB TESTS PASSED`, including
+   `without handover the new image fails as expected` (proves the K2 handover is needed),
+   `PuppetDB certificate kept`, `data from the old PuppetDB is present` and the rollback lines.
+   Scan: fixable 0, critical 0. Push like Phase 5.
+4. **Chart, DB workload:** K1–K4, K12 for the DB Deployment and its init containers, following
+   `k8s/openvoxdb.yaml` (probes on 8080, read-only root with the listed emptyDirs, password as a
+   mounted file for CKV_K8S_35, no root `setup-dirs` init container); env renamed per K16 with
+   the **old values set explicitly** (database name, user, `CERTNAME`, and the certificate
+   allowlist as `OPENVOXDB_CERTIFICATE_ALLOWLIST`), no `DNS_ALT_NAMES` (K13b). The DB PVC must not
+   be a hook (K5) and needs the handover (K2).
 5. **PostgreSQL:** K15 (or confirm it is external/out of scope with the operator).
 
 ### C5. Implement, test, rehearse
@@ -819,6 +831,9 @@ see it again, the fix tells you what changed.
 | CA signing fails after the Helm upgrade, HTTP 500 `Operation not permitted` | old image left CA files owned by 999:999 | `scripts/k8s-handover-volumes.sh` (H4 step 2) |
 | DB pod: `Permission denied` on `certs/private_keys/server.key` | PuppetDB SSL files are `0600` owned by 999 (KNOWLEDGE K2) | hand the DB PVC over too |
 | DB connects to an empty database / requests a new certificate | renamed env vars fell back to OpenVoxDB defaults (`openvoxdb`) (K16) | set `OPENVOXDB_POSTGRES_DATABASE`, `..._USER`, `CERTNAME` to the old values |
+| DB crash-loops: `unsigned CSR for 'openvoxdb' already exists on CA` | `DNS_ALT_NAMES` set on the DB; the CA doesn't autosign alt names (KNOWLEDGE.md K13b) | remove `DNS_ALT_NAMES`, `puppetserver ca clean --certname <db certname>`, delete `certs/` on the DB volume, restart |
+| Server log: `403 ... doesnt appear in the certificate allowlist` | allowlist set without the server's certname (PuppetDB 8.8.1: always on) | list every server certname in `OPENVOXDB_CERTIFICATE_ALLOWLIST` |
+| DB stops: `PuppetDB requires the PostgreSQL pg_trgm extension` | extension missing in the database | `CREATE EXTENSION pg_trgm;` as a superuser (DBA) |
 | Policy check reports CKV_K8S_28/37 but Checkov does not | old offline checker compared `drop: [all]` case-sensitively | fixed: the checker now ignores case, like Checkov |
 
 ---
@@ -926,10 +941,24 @@ checks in that run were inconclusive (a test-script exec error), so H4 keeps bot
 Checkov on the hardened render: the server Deployment has no CKV_K8S_22/40/9 failures; remaining
 there: CKV_K8S_38 (chart mounts the service-account token), CKV_K8S_8 (no liveness probe on the
 r10k sidecar), CKV_K8S_43 until the r10k image is digest-pinned too (`global.r10k.tag: "<tag>@sha256:..."`).
-PuppetDB and PostgreSQL still fail CKV_K8S_22/40 (not covered).
+PuppetDB and PostgreSQL in the public chart still fail CKV_K8S_22/40 (not covered by the post-renderer).
 Before the fixes, the rehearsal reproduced: PVC deletion on upgrade, pod Pending on the missing
 `puppetserver-claim`, the `Recreate` rejection, 0 replicas after handover, r10k failing on a
 read-only root, and CA signing failing on 999-owned files.
+
+OpenVoxDB (`openvoxdb-ubi:8.17.0`, UBI 9.8): Trivy 0 critical, 12 high, 256 total, **0 fixable**
+(PuppetDB 8.8.1-v1.7.0: 662 / 592 fixable; upstream openvoxdb 8.15.0: 282 / 230 fixable).
+`scripts/openvoxdb-test.sh` with PostgreSQL 16, the new server, and the migration from
+`ghcr.io/voxpupuli/puppetdb:8.8.1-v1.7.0` + `openvoxserver:8.8.1-v1.0.0`: `ALL OPENVOXDB TESTS
+PASSED` (22 checks: read-only root, agent data stored over TLS, allowlist allow/deny, password
+file, SIGTERM stop in <1 s; migration: fails without the handover as expected, certificate kept,
+old data present, new data stored; rollback via pg_dump restore: old image runs with data and
+certificate intact). On local k3s: `k8s/openvox-server.yaml` + `k8s/openvoxdb.yaml` + PostgreSQL 16
+with NetworkPolicies enforced: OpenVoxDB Ready in ~15 s as UID 64604, read-only root, password
+(with `"` and `\`) read from the mounted Secret, an agent pod's data stored, pod stop in 1 s.
+Checkov on both manifests: 178 passed, only CKV_K8S_43 failing until digests are set.
+Not tested: podman, amd64, your PostgreSQL (version, extensions, non-superuser account) and your
+real PuppetDB data volume.
 
 ## Appendix D: UBI 10 option
 

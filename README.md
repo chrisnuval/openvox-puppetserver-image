@@ -28,6 +28,9 @@ Path C uses it to analyse your own chart and image repos.
 | ghcr.io/openvoxproject/openvoxserver:8.17.0 | 0 | 30 | 2709 | 86 | 2825 | 13 |
 | **openvox-server-ubi:8.17.0, UBI 9.8 (default)** | 0 | 18 | 182 | 128 | 328 | **0** |
 | openvox-server-ubi:8.17.0, UBI 10.2 | 0 | 1 | 0 | 0 | 1 | 0 |
+| ghcr.io/voxpupuli/puppetdb:8.8.1-v1.7.0 | 0 | 5 | 495 | 162 | 662 | 592 |
+| ghcr.io/openvoxproject/openvoxdb:8.15.0 | 0 | 22 | 175 | 85 | 282 | 230 |
+| **openvoxdb-ubi:8.17.0, UBI 9.8** | 0 | 12 | 136 | 108 | 256 | **0** |
 
 The remaining UBI 9 findings are in packages the server needs (curl, OpenSSL, Java, Ruby,
 util-linux, expat) and are marked by Red Hat as `affected` / `will_not_fix` with no fix available.
@@ -95,6 +98,26 @@ capabilities dropped, seccomp RuntimeDefault, startup/readiness/liveness probes 
 `/status/v1/simple`, resource limits. For a migration use existing PVCs instead of
 `volumeClaimTemplates` (AGENT.md Phase 6). `k8s/migration/` holds the one-time root maintenance
 pod for backup/ownership/rollback; it is excluded from policy scans and must not stay deployed.
+
+## OpenVoxDB
+
+`openvoxdb/Containerfile` builds OpenVoxDB 8.17.0 the same way (release tarball on UBI 9 minimal,
+Java 21, UID 64604, read-only root filesystem, upstream entrypoint scripts unmodified):
+
+    podman build --format docker -f openvoxdb/Containerfile -t openvoxdb-ubi:8.17.0 .
+    scripts/openvoxdb-test.sh openvoxdb-ubi:8.17.0 openvox-server-ubi:8.17.0 \
+      ghcr.io/voxpupuli/puppetdb:8.8.1-v1.7.0 ghcr.io/openvoxproject/openvoxserver:8.8.1-v1.0.0
+
+The test starts PostgreSQL, the server and OpenVoxDB, stores agent data, and with the old images
+migrates a PuppetDB 8.8.1 volume and database and rolls back. Differences from the upstream
+openvoxdb image:
+- no default PostgreSQL password; set `OPENVOXDB_POSTGRES_PASSWORD`, or
+  `OPENVOXDB_POSTGRES_PASSWORD_FILE` pointing at a mounted Secret (Checkov CKV_K8S_35);
+- the certificate allowlist file lives in `/etc/puppetlabs/puppetdb` (writable), not in the app dir;
+- `forward-signals` replaces dumb-init (not in UBI) for a clean stop on SIGTERM;
+- `pg_isready` is a small TCP check instead of the PostgreSQL client package.
+The database needs the `pg_trgm` extension (`CREATE EXTENSION pg_trgm;` as a superuser).
+Kubernetes example: `k8s/openvoxdb.yaml`. Coming from PuppetDB 8.8.1: KNOWLEDGE.md K16.
 
 ## Helm (OpenVox chart)
 

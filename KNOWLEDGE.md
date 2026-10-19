@@ -58,14 +58,17 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 - Fix: one-time `chown -R 64604:64604` of every PVC, from a short-lived **root** pod running the
   **old** image (already approved in the cluster, has `chown`/`tar`), with the workload scaled to 0.
   `scripts/k8s-handover-volumes.sh` does this for a Deployment. Rollback: `chown -R 999:999`.
-- PuppetDB **[inspected]**: `/ssl.sh` sets `u=rw,g=,o=` on everything under
+- PuppetDB **[tested]**: `/ssl.sh` sets `u=rw,g=,o=` on everything under
   `SSLDIR=/opt/puppetlabs/server/data/puppetdb/certs` (on the data PVC), so the private key is
-  unreadable to any other UID: the same handover is mandatory for the PuppetDB PVC.
+  unreadable to any other UID. Reproduced: OpenVoxDB as 64604 on the 999-owned volume of
+  `voxpupuli/puppetdb:8.8.1` fails to start; after `chown -R 64604:64604` it starts and keeps
+  the certificate. The handover is mandatory for the PuppetDB PVC too. (The upstream openvoxdb
+  MIGRATION.md suggests `chgrp -R 0` + `chmod -R g+rwX` instead; this repo uses and tested chown.)
 - PostgreSQL **[inspected, general Postgres rule]**: the data directory must be owned by the running
   UID with mode 0700, or Postgres refuses to start. Changing its UID needs the same handover.
 - Storage that refuses `chown` (NFS root squash): STOP; owner change on the storage side.
 
-### K3. Read-only root filesystem (CKV_K8S_22) [tested for the server]
+### K3. Read-only root filesystem (CKV_K8S_22) [tested]
 - Every path the process or its entrypoint writes must be a volume. For the server image built here:
   `/etc/puppetlabs`, `/opt/puppetlabs/server/data/puppetserver`, `/opt/puppetlabs/puppet/cache`,
   `/var/log/puppetlabs`, `/run/puppetlabs`, `/run/openvox`, `/tmp`.
@@ -74,14 +77,16 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 - emptyDirs start empty: the image keeps pristine copies in `/usr/share/openvox-seed` and
   `00-seed-writable-dirs.sh` copies **missing** entries only (never overwrites PVC content, never
   touches mount points, works with nested mounts).
-- PuppetDB / OpenVoxDB **[inspected]** writes at startup:
-  - `sed -i` on `/etc/puppetlabs/puppetdb/conf.d/jetty.ini` (enables SSL), and with an allowlist
-    also `puppetdb.conf` (via `hocon`): `/etc/puppetlabs/puppetdb` must be writable (seeded emptyDir);
-  - `/opt/puppetlabs/server/apps/puppetdb/certificate-allowlist` (inside the application dir!):
-    relocate (config setting `certificate-allowlist`) or make that one file a writable mount;
-  - SSL certs and logs under `/opt/puppetlabs/server/data/puppetdb` (the PVC); Java needs `/tmp`.
-  ConfigMap `subPath` mounts into `conf.d` (custom configs, metrics) stay read-only; that is fine
-  as long as the entrypoint does not edit those same files.
+- OpenVoxDB (`openvoxdb/Containerfile`) writes: `/etc/puppetlabs/puppetdb` (the entrypoint
+  `sed -i`s `conf.d/jetty.ini` to enable SSL; seeded emptyDir), `/opt/puppetlabs/server/data/puppetdb`
+  (PVC: certificate, queue, logs), `/var/log/puppetlabs`, `/run/puppetlabs`, `/tmp`. Tested with
+  `--read-only`.
+- The upstream allowlist script appends to `/opt/puppetlabs/server/apps/puppetdb/certificate-allowlist`
+  (inside the application dir) and calls an AIO-agent `hocon` binary; this image replaces it with a
+  script that writes the list to `/etc/puppetlabs/puppetdb/certificate-allowlist` and points
+  `puppetdb.conf` at it (tested: allowed certname writes, others are rejected).
+- ConfigMap `subPath` mounts into `conf.d` (custom configs, metrics) stay read-only; fine as long as
+  the entrypoint does not edit those same files (it edits `jetty.ini`, `puppetdb.conf`, `database.conf`).
 
 ### K4. Root init containers (CKV_K8S_40, also 22) [tested]
 - Charts often `chown` volumes in a root init container at every start (`setup-dirs`,
@@ -142,9 +147,9 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
   | `ghcr.io/voxpupuli/puppetdb:8.8.1-v1.7.0` (Ubuntu 22.04, AIO agent, Java 17, curl 7.81 + vendored 8.10.1) | 0 | 5 | 662 | 592 |
   | `ghcr.io/openvoxproject/openvoxdb:8.15.0` (Ubuntu 26.04, Java 21) | 0 | 22 | 282 | 230 |
   | this repo's `openvox-server-ubi:8.17.0` (UBI 9) | 0 | 18 | 328 | **0** |
+  | this repo's `openvoxdb-ubi:8.17.0` (UBI 9) | 0 | 12 | 256 | **0** |
 
-  Upstream images are newer but **not** clean; an OpenVoxDB image built like the server image is
-  the expected route to 0 fixable for the DB too (not built in the reference run).
+  Upstream images are newer but **not** clean; building on UBI from the tarball gets both to 0 fixable.
 
 ### K12. Remaining Checkov checks and how they are met [tested]
 | Check | Meaning | Fix |
@@ -161,6 +166,7 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 | CKV_K8S_43 | image digest | `image: repo@sha256:...` (or `tag: "x@sha256:..."`), **all** images incl. sidecars/init |
 | CKV_K8S_10–13 | requests/limits | set CPU/memory requests and limits on every container |
 | CKV2_K8S_6 | NetworkPolicy | one per workload |
+| CKV_K8S_35 | secrets as env vars | mount the Secret as a file; OpenVoxDB reads `OPENVOXDB_POSTGRES_PASSWORD_FILE` (this image; tested). Charts usually pass the DB password via `secretKeyRef` env, which fails this check |
 - Exit criteria: compare **failed check IDs**, never pass counts (local Checkov and the container
   report 88 vs 89 passed for the same file).
 
@@ -170,6 +176,23 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 - `OPENVOXSERVER_ENVIRONMENT_TIMEOUT=unlimited` caches environments: use a new environment for tests.
 - Catalog test requests send no facts: test manifests must not use `$facts`.
 - `podman build --format docker` keeps `HEALTHCHECK`.
+- `puppet agent` inside the server image fails (`Permission denied ... .puppetlabs/opt/puppet/public`):
+  the server image is not an agent and its default agent dirs are read-only. For test agent runs use
+  a throwaway container with `--vardir/--publicdir/--ssldir/--rundir/--logdir/--confdir/--codedir`
+  under `/tmp` (see `scripts/openvoxdb-test.sh`).
+- `puppet agent -t` exits **2** when it applied changes; treat 0 and 2 as success.
+- PuppetDB single-object queries are pretty-printed (`"key" : "value"`); list queries are compact.
+
+### K13b. Certificates for OpenVoxDB [tested]
+- The CA autosigns only requests **without** alternative names unless the server has
+  `CA_ALLOW_SUBJECT_ALT_NAMES=true`. An OpenVoxDB with `DNS_ALT_NAMES` set leaves an unsigned CSR
+  and crash-loops with `unsigned CSR for '<certname>' already exists on CA`. The server connects to
+  the certname, so name the DB Service like the certname and leave `DNS_ALT_NAMES` empty (or sign
+  the CSR by hand: `puppetserver ca sign --certname <name>`).
+- After a failed first start: `puppetserver ca clean --certname <name>` on the server and remove
+  `certs/` on the DB volume, then start again.
+- `puppetserver ca ...` inside the server pod needs `CA_HOSTNAME` to resolve: set it to the
+  server's Service name (`k8s/openvox-server.yaml` does).
 
 ### K14. Image hosting and versions [tested]
 - `ghcr.io/openvoxproject/openvoxserver` and `.../openvoxdb` are the OpenVox images;
@@ -179,6 +202,8 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
   (8.17.0 used here; checksums in `build/checksums.sha256`).
 
 ### K15. PostgreSQL [inspected]
+- OpenVoxDB requires the `pg_trgm` extension (`CREATE EXTENSION pg_trgm;` as a superuser in the
+  database); without it it stops with "PuppetDB requires the PostgreSQL `pg_trgm` extension" [tested].
 - Bitnami PostgreSQL runs as 1001 (fails CKV_K8S_40) and supports arbitrary UIDs: set
   `runAsUser`/`fsGroup` ≥ 10000, `readOnlyRootFilesystem: true` with emptyDirs for `/tmp` and
   `/opt/bitnami/postgresql/tmp` (and conf if the chart writes it), then hand the data PVC over (K2).
@@ -186,7 +211,7 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
   Red Hat `rhel9/postgresql-16` image (runs as 26: still needs a UID override).
 - Back up with `pg_dump` before any change to the DB workload.
 
-### K16. PuppetDB 8.8.1 (Vox Pupuli) → OpenVoxDB migration facts [inspected]
+### K16. PuppetDB 8.8.1 (Vox Pupuli) → OpenVoxDB migration facts [tested]
 | | `voxpupuli/puppetdb:8.8.1-v1.7.0` | `openvoxproject/openvoxdb:8.15.0` |
 |---|---|---|
 | Runs as | root, launcher `runuser` → `puppetdb` 999:999 | 64604:0, `USER=""` |
@@ -196,16 +221,23 @@ Checkov container. Group failures **per workload** (server, DB, PostgreSQL, side
 | `CERTNAME` default | `puppetdb` | `openvoxdb` |
 | SSL files | `$SSLDIR/{certs/server.crt, private_keys/server.key, certs/ca.pem}`, `SSLDIR=/opt/puppetlabs/server/data/puppetdb/certs` | same paths |
 | Data PVC | `/opt/puppetlabs/server/data/puppetdb` | same |
+| Certificate allowlist | **always on**: with `PUPPETDB_CERTIFICATE_ALLOWLIST` empty the list is empty and every client, the server included, gets `403 ... doesnt appear in the certificate allowlist` | only when `OPENVOXDB_CERTIFICATE_ALLOWLIST` is set; otherwise any certificate from the CA is accepted |
 
 Consequences:
 - **Set every renamed variable explicitly** with the *old* values: `OPENVOXDB_POSTGRES_DATABASE=puppetdb`,
-  `OPENVOXDB_POSTGRES_USER`, `..._PASSWORD`, `..._HOSTNAME`, TTLs, allowlist, and
+  `OPENVOXDB_POSTGRES_USER`, `..._PASSWORD`, `..._HOSTNAME`, TTLs,
+  **`OPENVOXDB_CERTIFICATE_ALLOWLIST`** (a working 8.8.1 deployment must have
+  `PUPPETDB_CERTIFICATE_ALLOWLIST` set; dropping it silently widens access to every certificate the
+  CA signed), and
   **`CERTNAME=puppetdb`** (or whatever the old one was). Relying on the new defaults points the DB
   at an empty database and requests a new certificate under a new name.
 - The upstream chart template uses `OPENVOX*` names; a fork running the 8.8.1 image uses
   `PUPPETDB_*`: update both the image and the env names in the same change.
-- OpenVoxDB 8.x reads a PuppetDB 8.x database and migrates the schema forward on start: **take a
-  `pg_dump` first**; a rollback to 8.8.1 after the schema migration needs the dump restored.
+- OpenVoxDB 8.17 runs on a PuppetDB 8.8.1 database and migrates the schema forward on start: **take
+  a `pg_dump` first**; rollback = restore the dump into a fresh database, `chown -R 999:999` the
+  volume, start 8.8.1 (tested by `scripts/openvoxdb-test.sh`: data and certificate intact).
+- Tested end to end with `CERTNAME=puppetdb`, `OPENVOXDB_POSTGRES_DATABASE/USER` set to the old
+  values: same certificate (no new CSR), old data present, new agent data stored.
 - The server's `puppetdb.conf` / `OPENVOXDB_SERVER_URLS` must keep pointing at the same Service name.
 
 ---
@@ -218,5 +250,17 @@ Consequences:
 | Server workload hardening | `helm/values-hardened.yaml` + `helm/post-render/` | apply K1–K10, K12 **in the templates**; the post-renderer depends on 11.0.0 names, use it only as a reference |
 | Volume handover | `scripts/k8s-handover-volumes.sh` (Deployment) | same script if the workload is a Deployment and the server container is not named `r10k-*`; otherwise adapt the selection lines |
 | Rehearsal | `scripts/helm-migration-test.sh` (labels `app.kubernetes.io/component=puppetserver`, `instance=<rel>`) | adapt `server_pod`, `pvc_uids` selectors to the fork's labels |
-| DB image | not covered | build an OpenVoxDB UBI image like the server one (K11, K16) |
+| DB image | `openvoxdb/Containerfile`, tests `scripts/openvoxdb-test.sh`, manifest `k8s/openvoxdb.yaml` | same; DB workload hardening in the templates following `k8s/openvoxdb.yaml` |
 | PostgreSQL | not covered | K15 |
+
+---
+
+## 4. OpenVoxDB image specifics [tested]
+
+| Topic | Upstream openvoxdb image | `openvoxdb-ubi` (this repo) | Why |
+|---|---|---|---|
+| PID 1 | `dumb-init` | `/usr/local/bin/forward-signals` | dumb-init is not in UBI; without a signal-forwarding PID 1 the launcher's bash ignores SIGTERM and pods wait the full grace period |
+| DB password | default `openvoxdb` baked in | no default; env or `OPENVOXDB_POSTGRES_PASSWORD_FILE` | no secret in the image (Hadolint DL3064, Aqua), CKV_K8S_35 |
+| `pg_isready` | PostgreSQL client package | TCP-check stand-in script | one check, no client package findings |
+| Allowlist | in the app dir via AIO `hocon` | in `/etc/puppetlabs/puppetdb` | read-only root; no AIO agent |
+| Config at start | edits files in place | same, on a seeded emptyDir | read-only root |

@@ -39,6 +39,8 @@ spec:
               value: openvox
             - name: DNS_ALT_NAMES
               value: puppet,openvox,openvox-server,openvox-server.openvox.svc,openvox-server.openvox.svc.cluster.local
+            - name: CA_HOSTNAME   # where `puppetserver ca ...` and the server's agent find the CA: a name that resolves in the pod
+              value: openvox-server
             - name: AUTOSIGN      # upstream default "true" signs every CSR; use "false" or a policy script in production
               value: "true"
             - name: USE_OPENVOXDB # set "true" and OPENVOXDB_SERVER_URLS when you run OpenVoxDB

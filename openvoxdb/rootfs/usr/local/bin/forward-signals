@@ -1,0 +1,15 @@
+#!/bin/bash
+# PID 1 for the OpenVoxDB image. Upstream runs under dumb-init (not available in UBI): the
+# PuppetDB launcher keeps bash processes between PID 1 and Java, and PID 1 ignores SIGTERM unless
+# it handles it, so `docker stop` / pod termination waited for the kill timeout.
+# This runs the entrypoint as a child and passes SIGTERM/SIGINT on to Java (or to the entrypoint
+# while it is still waiting for PostgreSQL/the server), then exits with the child's status.
+"$@" &
+child=$!
+forward() { pkill -"$1" -x java 2>/dev/null || kill -"$1" "$child" 2>/dev/null; }
+trap 'forward TERM' TERM
+trap 'forward INT' INT
+while :; do
+  wait "$child"; rc=$?
+  kill -0 "$child" 2>/dev/null || exit "$rc"   # wait returns early when a trapped signal arrives
+done
