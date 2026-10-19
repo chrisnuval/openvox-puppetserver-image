@@ -10,6 +10,11 @@ rehearsal, cutover and rollback.
 [`KNOWLEDGE.md`](KNOWLEDGE.md) is the catalogue of every finding (K1–K16) with how to recognise
 it in an unfamiliar chart or image repo, including PuppetDB/OpenVoxDB and PostgreSQL; AGENT.md
 Path C uses it to analyse your own chart and image repos.
+[`HANDOVER.md`](HANDOVER.md) is the checklist, with real sample output, for moving existing volumes
+(CA, signed certificates, PuppetDB data) from the old images' UID 999 to the new UID 64604.
+
+**For an agent:** give it this repository and `AGENT.md` as its instructions; AGENT.md tells it
+when to read the other two.
 
 - **No fixable vulnerabilities.** Java 21, Ruby 3.3, curl and OpenSSL come from Red Hat's RPMs,
   not from the openvox-agent all-in-one package (which vendors its own copies). No compilers, no

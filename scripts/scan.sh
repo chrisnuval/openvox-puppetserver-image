@@ -70,6 +70,10 @@ else
     # shellcheck disable=SC2046
     $engine run --rm -v "$PWD/k8s:/k8s:ro$z" -v "$PWD/scripts:/scripts:ro$z" --entrypoint ruby "${POLICY_IMAGE:-$image}" \
       /scripts/k8s-policy-check.rb $(printf '/k8s/%s ' $manifests) > "$policy_out" 2>&1
+    if ! grep -q 'Passed checks' "$policy_out"; then
+      echo "  policy check could not run: no Ruby in ${POLICY_IMAGE:-$image}." \
+           "Set POLICY_IMAGE to the server image (it has Ruby), e.g. POLICY_IMAGE=openvox-server-ubi:8.17.0" >&2
+    fi
   fi
 fi
 grep -E "Passed checks|FAIL|Check: CKV" "$policy_out" | sed 's/^/  /'
