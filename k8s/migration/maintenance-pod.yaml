@@ -1,0 +1,35 @@
+# One-time maintenance pod for the migration (backup, ownership change, rollback).
+# Uses the OLD openvoxserver image: it is already approved in the cluster, runs as root and has tar.
+# NOT part of the steady state: delete it as soon as the step is done (see AGENT.md, Phase 7/8/10).
+# It intentionally runs as root, so it will fail Checkov; never commit it next to k8s/openvox-server.yaml.
+#
+# Fill in every <...> from migration-report.md (Phase 1 discovery). Mount EVERY PVC the old
+# server used, at the SAME paths the old server mounted them.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: openvox-maint
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: openvox-maint
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: maint
+      image: <OLD_IMAGE_EXACTLY_AS_DEPLOYED>
+      command: ["sleep", "infinity"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: pvc-1
+          mountPath: <MOUNT_PATH_1>        # e.g. /etc/puppetlabs
+        # - name: pvc-2
+        #   mountPath: <MOUNT_PATH_2>
+  volumes:
+    - name: pvc-1
+      persistentVolumeClaim:
+        claimName: <PVC_NAME_1>
+    # - name: pvc-2
+    #   persistentVolumeClaim:
+    #     claimName: <PVC_NAME_2>

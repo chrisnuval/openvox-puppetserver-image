@@ -1,0 +1,12 @@
+# Strategic merge patch: replace the PVC volume with an emptyDir (see kustomization.yaml)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ignored
+spec:
+  template:
+    spec:
+      volumes:
+        - name: puppet-puppetserver
+          persistentVolumeClaim: null
+          emptyDir: {}

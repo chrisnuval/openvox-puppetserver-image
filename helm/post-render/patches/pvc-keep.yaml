@@ -1,0 +1,8 @@
+# Strategic merge patch for every PVC (see kustomization.yaml). The helm.sh/hook annotation itself
+# is removed by post-render.sh before kustomize runs (kustomize can't delete a map key reliably).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ignored
+  annotations:
+    helm.sh/resource-policy: keep

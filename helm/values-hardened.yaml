@@ -1,0 +1,55 @@
+# Values for the OpenVox Helm chart (OpenVoxProject/openvox-helm-chart, tested with chart 11.0.0)
+# running the openvox-server-ubi image. Always deploy together with the post-renderer in
+# post-render/ (README there): the chart has no setting for a read-only root filesystem.
+#
+#   helm upgrade --install <release> <chart> -n <ns> -f <your values> -f helm/values-hardened.yaml \
+#     --post-renderer ./helm/post-render/post-render.sh          # Helm 3
+#   (Helm 4: install the plugin once, then --post-renderer openvox-hardening)
+
+global:
+  r10k:
+    imagePullPolicy: Always # CKV_K8S_15 for the r10k sidecar
+  # No root init container; the server runs as UID 64604 (fixes CKV_K8S_40 for the server).
+  runAsNonRoot: true
+  securityContext:          # chart defaults, repeated on purpose: they must match the image
+    runAsUser: 64604
+    runAsGroup: 64604
+    fsGroup: 64604
+
+puppetserver:
+  image: registry.example.com/openvox-server-ubi     # your registry
+  tag: "8.17.0"             # pin the digest: "8.17.0@sha256:<digest>" (CKV_K8S_43)
+  pullPolicy: Always        # CKV_K8S_15
+  masters:
+    # One CA server: stop the old pod before starting the new one (two CA servers must never run
+    # at once, and ReadWriteOnce volumes can't attach twice). Same effect as "Recreate", but
+    # switching an existing Deployment to Recreate is rejected by server-side apply (Helm 4).
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+    resources:              # CKV_K8S_10-13; heap is 1g, keep ~1g headroom
+      requests:
+        cpu: 500m
+        memory: 1536Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+# r10k sidecar (only rendered when puppetserver.puppeturl is set)
+r10k:
+  code:
+    resources:              # CKV_K8S_10-13 for the sidecar
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true    # CKV_K8S_22; its writable /tmp comes from the post-renderer
+    capabilities:
+      drop:
+        - ALL

@@ -1,0 +1,52 @@
+# JSON patch for the chart's puppetserver-master Deployment (container 0 is the server).
+# Rendered with global.runAsNonRoot=true, which is required (values-hardened.yaml).
+- op: remove                      # chart runs `puppetserver foreground` directly, skipping the
+  path: /spec/template/spec/containers/0/command   # image's entrypoint (env-var config, volume seeding)
+- op: remove
+  path: /spec/template/spec/containers/0/args
+# Single CA server: the chart omits replicas unless multiMasters is enabled, so a Deployment that
+# was scaled to 0 for the volume handover would stay at 0 after `helm upgrade`
+- op: add
+  path: /spec/replicas
+  value: 1
+- op: add
+  path: /spec/template/spec/containers/0/securityContext/readOnlyRootFilesystem
+  value: true
+- op: add
+  path: /spec/template/spec/securityContext/runAsNonRoot
+  value: true
+- op: add
+  path: /spec/template/spec/securityContext/seccompProfile
+  value:
+    type: RuntimeDefault
+# Writable scratch paths (everything else is on the chart's PVCs)
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-tmp, emptyDir: {sizeLimit: 1Gi}}       # must allow exec (JRuby native lib)
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-puppet-cache, emptyDir: {}}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-logs, emptyDir: {sizeLimit: 1Gi}}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-run, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-run-openvox, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-tmp, mountPath: /tmp}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-puppet-cache, mountPath: /opt/puppetlabs/puppet/cache}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-logs, mountPath: /var/log/puppetlabs}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-run, mountPath: /run/puppetlabs}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-run-openvox, mountPath: /run/openvox}

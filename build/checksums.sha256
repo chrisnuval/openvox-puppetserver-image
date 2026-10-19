@@ -1,0 +1,15 @@
+7826fc37152341183660bbd280884a10c36229e5a8eac703de678c23879cb432  container-openvoxserver-d51a22173a6de6e21731ee8e3c06d5d9f9dd8166.tar.gz
+e44e6a4af2532427ca7b9ca223b9407402241bd2ec8547d5e4feb172f00a17dc  openvox-server-8.17.0.tar.gz
+d64e3aff1a1c62b5652cba677a53b4c42f0efc8db1f83ad6f49ce2c8e4cb1c0c  openvox-server-9.1.0.tar.gz
+1421c0187dec9ac65499f0341dfdf8527682a7430241084efe1bafaaf7b79cd9  openvoxdb-8.17.0.tar.gz
+0f830f065cc4b7559d40f42299b9501f25ae16f2af4e06821499b1eec58d1e9b  openvoxdb-9.1.0.tar.gz
+6c30b1718f7f16297f3e678c2e02a22755881e8474b21ccfc93ff99cb4a09ea8  puppetlabs-augeas_core-2.0.1.tar.gz
+3fc67e9d0d8d73be1699105afc0848426db77ecdc11204198819dce9178b0dd2  puppetlabs-cron_core-2.0.3.tar.gz
+019906afcc54c96c3988f775208419f3cac399478f44af10b543904e185a57fe  puppetlabs-host_core-2.0.1.tar.gz
+3a310c9c7ef92f61fed50ab2c5c868adadd0bca112b0e492a5c08e84c56c3097  puppetlabs-mount_core-2.0.1.tar.gz
+87ace2cde5dd81d95dde14024f74838e6f15d6edff9232c771523d4b1652438d  puppetlabs-scheduled_task-5.0.0.tar.gz
+ea2d3e5864c18a74e4c7a2cd5c52685564fb6e69d277a850d4e2a9d26b5085e7  puppetlabs-selinux_core-2.0.1.tar.gz
+01757c63c6642d9d28f2d8a6e847333460a2c0b42af110a53a31d0f62abbdc74  puppetlabs-sshkeys_core-3.0.2.tar.gz
+fad22df2926a5edfcf2d559f23a5f30d91221dc383d54783e6cafd0693b4057a  puppetlabs-yumrepo_core-3.0.1.tar.gz
+0c4325359d1dc376ab1b63a24f77feb092c3f5b115ef0642a59c9972c7787500  puppetlabs-zfs_core-2.0.1.tar.gz
+3cdd3fd1117945c5ace8378f549ae042f87d70249ce75119f9f956ba9746a1f7  puppetlabs-zone_core-2.0.2.tar.gz

@@ -1,0 +1,6 @@
+/etc/puppetlabs
+/opt/puppetlabs/server/data/puppetserver
+/opt/puppetlabs/puppet/cache
+/var/log/puppetlabs
+/run/puppetlabs
+/run/openvox

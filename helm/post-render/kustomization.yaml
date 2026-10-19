@@ -1,0 +1,47 @@
+# Applied by post-render.sh to the chart's rendered output (rendered.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rendered.yaml
+patches:
+  # PROTECTS THE CA. With global.runAsNonRoot=true the chart turns every PVC into a pre-install
+  # hook. Hooks are not release resources, so `helm upgrade` from the default (root) mode would
+  # DELETE the existing PVCs, CA included. Keep them as normal release resources, and mark them
+  # keep so no future upgrade/uninstall deletes them either.
+  - path: patches/pvc-keep.yaml
+    target:
+      kind: PersistentVolumeClaim
+  # Not used (/etc/puppetlabs/puppetserver is an emptyDir, see below)
+  - target:
+      kind: PersistentVolumeClaim
+      name: .*-puppetserver-claim
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: ignored
+  # Puppet server: read-only root (CKV_K8S_22), scratch volumes, the image's own entrypoint
+  - path: patches/puppetserver.yaml
+    target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/component=puppetserver
+  # /etc/puppetlabs/puppetserver as emptyDir instead of the chart's non-root-mode PVC: the image
+  # regenerates that config from env vars at every start (as the chart's root mode always did;
+  # the CA has its own PVC). The chart creates that PVC only as a pre-install hook, so it never
+  # exists when an existing release is upgraded, and the pod would stay Pending.
+  - path: patches/puppetserver-config.yaml
+    target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/component=puppetserver
+  # The chart's pre-install Job runs as root to copy config into the volumes. The image does that
+  # itself at startup as UID 64604, so the Job is not needed (and would fail CKV_K8S_22/40).
+  - target:
+      kind: Job
+      name: .*-puppet-preinstall
+    patch: |-
+      $patch: delete
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: ignored

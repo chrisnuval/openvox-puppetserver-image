@@ -1,0 +1,11 @@
+# Helm 4 post-renderer plugin wrapper around post-render.sh.
+#   helm plugin install ./helm/post-render
+#   helm upgrade --install ... --post-renderer openvox-hardening
+apiVersion: v1
+type: postrenderer/v1
+name: openvox-hardening
+version: 1.0.0
+runtime: subprocess
+runtimeConfig:
+  platformCommand:
+    - command: ${HELM_PLUGIN_DIR}/post-render.sh

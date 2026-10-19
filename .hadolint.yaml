@@ -1,0 +1,4 @@
+ignored:
+  # RPMs are intentionally unpinned: every rebuild should pick up Red Hat's latest security errata.
+  # Reproducibility comes from the pinned base image tag and the checksummed OpenVox downloads.
+  - DL3041

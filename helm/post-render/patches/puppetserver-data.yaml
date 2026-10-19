@@ -1,0 +1,8 @@
+# Added by post-render.sh only when the chart does not already mount a PVC on the data dir
+# (puppetserver.persistence.data.enabled=false, the chart default).
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: ovx-data, emptyDir: {}}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: ovx-data, mountPath: /opt/puppetlabs/server/data/puppetserver}

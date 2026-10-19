@@ -1,0 +1,136 @@
+# OpenVox Server on Kubernetes, hardened for Checkov (CKV_K8S_9, _22 and _40 among others).
+# Before applying: set the image (pinned by digest), namespace and DNS names.
+# MIGRATING an existing server: do not use volumeClaimTemplates (they create NEW, empty volumes and
+# therefore a NEW CA). Reference the existing PVC(s) under `volumes:` instead; see AGENT.md Phase 6.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openvox-server
+  namespace: openvox
+  labels:
+    app.kubernetes.io/name: openvox-server
+spec:
+  serviceName: openvox-server
+  replicas: 1   # the CA must run as a single instance
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openvox-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openvox-server
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 64604        # CKV_K8S_40: UID >= 10000
+        runAsGroup: 64604
+        fsGroup: 64604          # makes the PVC writable for that UID
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: openvox-server
+          image: registry.example.com/openvox-server-ubi:8.17.0   # replace; pin with @sha256:<digest>
+          imagePullPolicy: Always
+          env:
+            - name: CERTNAME
+              value: openvox
+            - name: DNS_ALT_NAMES
+              value: puppet,openvox,openvox-server,openvox-server.openvox.svc,openvox-server.openvox.svc.cluster.local
+            - name: AUTOSIGN      # upstream default "true" signs every CSR; use "false" or a policy script in production
+              value: "true"
+            - name: USE_OPENVOXDB # set "true" and OPENVOXDB_SERVER_URLS when you run OpenVoxDB
+              value: "false"
+            # If you override OPENVOXSERVER_JAVA_ARGS, keep the class-data-sharing flag for fast startup:
+            # -XX:SharedArchiveFile=/opt/puppetlabs/server/apps/puppetserver/puppetserver.jsa
+          ports:
+            - name: https
+              containerPort: 8140
+          securityContext:
+            readOnlyRootFilesystem: true          # CKV_K8S_22
+            allowPrivilegeEscalation: false
+            privileged: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          # The status endpoint allows unauthenticated GETs (auth.conf), so plain HTTPS probes work
+          startupProbe:
+            httpGet: {path: /status/v1/simple, port: https, scheme: HTTPS}
+            periodSeconds: 10
+            failureThreshold: 30                  # up to 5 minutes for first start (CA generation)
+          readinessProbe:                         # CKV_K8S_9
+            httpGet: {path: /status/v1/simple, port: https, scheme: HTTPS}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /status/v1/simple, port: https, scheme: HTTPS}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1536Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi     # heap is 1g (OPENVOXSERVER_JAVA_ARGS); keep ~1g headroom for JRuby/metaspace
+          # Writable paths (the root filesystem is read-only). Empty volumes are filled from the image
+          # at startup; existing files on the PVC are never overwritten.
+          volumeMounts:
+            - {name: puppetlabs-etc, mountPath: /etc/puppetlabs}                  # config, CA, certs, code
+            - {name: data, mountPath: /opt/puppetlabs/server/data/puppetserver}  # vardir, reports
+            - {name: puppet-cache, mountPath: /opt/puppetlabs/puppet/cache}
+            - {name: logs, mountPath: /var/log/puppetlabs}
+            - {name: run, mountPath: /run/puppetlabs}
+            - {name: run-openvox, mountPath: /run/openvox}
+            - {name: tmp, mountPath: /tmp}                                        # must allow exec (JRuby native lib)
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: puppet-cache, emptyDir: {}}
+        - {name: logs, emptyDir: {sizeLimit: 1Gi}}
+        - {name: run, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+        - {name: run-openvox, emptyDir: {medium: Memory, sizeLimit: 16Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 1Gi}}
+  volumeClaimTemplates:
+    - metadata:
+        name: puppetlabs-etc
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openvox-server
+  namespace: openvox
+  labels:
+    app.kubernetes.io/name: openvox-server
+spec:
+  selector:
+    app.kubernetes.io/name: openvox-server
+  ports:
+    - name: https
+      port: 8140
+      targetPort: https
+---
+# Only agents (and anything else that must reach the server) may connect, and only on 8140.
+# Narrow "from" to your agent networks / namespaces; with no "from" every source is allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openvox-server
+  namespace: openvox
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openvox-server
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 8140
+          protocol: TCP

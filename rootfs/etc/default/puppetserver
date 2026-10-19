@@ -1,0 +1,14 @@
+# Settings for the puppetserver launcher (based on ext/default from the openvox-server tarball)
+
+JAVA_BIN="/usr/bin/java"
+JAVA_ARGS=$OPENVOXSERVER_JAVA_ARGS
+JAVA_ARGS_CLI="${JAVA_ARGS_CLI:-}"
+TK_ARGS=""
+
+# Empty: the container already runs as the unprivileged user, so the launcher must not switch users
+USER=""
+GROUP=""
+INSTALL_DIR="/opt/puppetlabs/server/apps/puppetserver"
+CONFIG="/etc/puppetlabs/puppetserver/conf.d"
+BOOTSTRAP_CONFIG="/etc/puppetlabs/puppetserver/services.d/,/opt/puppetlabs/server/apps/puppetserver/config/services.d/"
+SERVICE_STOP_RETRIES=60
