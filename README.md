@@ -106,7 +106,8 @@ PVCs, CA included, unless the post-renderer is used; follow AGENT.md Path H.
 - JRuby gem directories live under `apps/` (read-only); the data dir only holds symlinks.
 
 ## License
-openvox-server is Apache-2.0. The entrypoint scripts under `/container-entrypoint*`,
+This repository's own files (Containerfile, scripts, manifests, Helm files, docs) are licensed
+under the [Apache License 2.0](LICENSE). openvox-server itself is also Apache-2.0. The entrypoint scripts under `/container-entrypoint*`,
 `/healthcheck.sh`, `/usr/local/bin/config_ini.rb`, `/usr/local/share/openvox/config_lib.sh` and
 `/var/tmp/puppet` come unmodified from
 [OpenVoxProject/container-openvoxserver](https://github.com/OpenVoxProject/container-openvoxserver),
